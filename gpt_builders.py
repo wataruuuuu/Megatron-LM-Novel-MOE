@@ -21,9 +21,22 @@ from megatron.training import get_args, print_rank_0
 from megatron.training.arguments import core_transformer_config_from_args
 from megatron.training.yaml_arguments import core_transformer_config_from_yaml
 
+from layerwise_ffn.config import LayerwiseFFNTransformerConfig
+from layerwise_ffn.layer_specs import build_layerwise_ffn_block_spec
+from layerwise_ffn.sharing import tie_ffn_across_layers
+
 import megatron.legacy.model  # isort: skip
 
 # NOTE: Loading `megatron.legacy.model` earlier fails due to circular import
+
+
+def _use_layerwise_ffn(args):
+    # Enable the layer-wise FFN path when either per-layer FFN sizes or sharing groups are
+    # given. Sharing groups alone are valid: ffn_hidden_dims stays None and the config falls
+    # back to a homogeneous width from ffn_hidden_size.
+    return bool(
+        getattr(args, "ffn_hidden_dims", None) or getattr(args, "ffn_sharing_groups", None)
+    )
 
 
 def gpt_builder(args, pre_process, post_process, vp_stage=None, config=None, pg_collection=None):
@@ -31,6 +44,12 @@ def gpt_builder(args, pre_process, post_process, vp_stage=None, config=None, pg_
     if config is None:
         if args.yaml_cfg is not None:
             config = core_transformer_config_from_yaml(args, "language_model")
+        elif _use_layerwise_ffn(args):
+            # Layer-wise FFN redistribution / sharing: use a config subclass that applies
+            # per-layer ffn_hidden_size through Megatron's heterogeneous per-layer config hook.
+            config = core_transformer_config_from_args(
+                args, config_class=LayerwiseFFNTransformerConfig
+            )
         else:
             config = core_transformer_config_from_args(args)
     if args.use_legacy_models:
@@ -65,6 +84,13 @@ def gpt_builder(args, pre_process, post_process, vp_stage=None, config=None, pg_
             elif args.heterogeneous_layers_config_path is not None:
                 assert not (config.transformer_impl == "inference_optimized")
                 transformer_layer_spec = get_gpt_heterogeneous_layer_spec(config, use_te)
+            elif _use_layerwise_ffn(args):
+                # Layer-wise FFN: wrap the standard TE layer spec into a per-layer block spec
+                # so that FFN-less layers (dim 0) get a no-op MLP.
+                base_layer_spec = _get_transformer_layer_spec(use_te, config)
+                transformer_layer_spec = build_layerwise_ffn_block_spec(
+                    config, base_layer_spec, vp_stage=vp_stage
+                )
             else:
                 # Define the decoder layer spec
                 transformer_layer_spec = _get_transformer_layer_spec(use_te, config)
@@ -117,6 +143,10 @@ def gpt_builder(args, pre_process, post_process, vp_stage=None, config=None, pg_
             pg_collection=pg_collection,
         )
 
+        if _use_layerwise_ffn(args):
+            # Tie slave-layer FFNs to their group master before the model is wrapped/optimized.
+            tie_ffn_across_layers(model, config)
+    
     return model
 
 

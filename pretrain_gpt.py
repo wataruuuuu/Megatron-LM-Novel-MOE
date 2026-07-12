@@ -53,6 +53,7 @@ from megatron.training.utils import (
 )
 from megatron.training.datasets.sft_dataset import SFTDataset, MockSFTDataset
 from model_provider import model_provider
+from layerwise_ffn.arguments import add_layerwise_ffn_args
 
 try:
     from megatron.post_training.arguments import add_modelopt_args
@@ -61,6 +62,14 @@ try:
     has_nvidia_modelopt = True
 except ImportError:
     has_nvidia_modelopt = False
+
+
+def extra_args_provider(parser):
+    """Register project-level extra CLI args (layer-wise FFN, and modelopt if available)."""
+    parser = add_layerwise_ffn_args(parser)
+    if has_nvidia_modelopt:
+        parser = add_modelopt_args(parser)
+    return parser
 
 stimer = StragglerDetector()
 
@@ -428,7 +437,7 @@ if __name__ == "__main__":
         ModelType.encoder_or_decoder,
         forward_step,
         args_defaults={'tokenizer_type': 'GPT2BPETokenizer'},
-        extra_args_provider=add_modelopt_args if has_nvidia_modelopt else None,
+        extra_args_provider=extra_args_provider,
         store=store,
         get_embedding_ranks=get_embedding_ranks,
     )
