@@ -54,6 +54,7 @@ from megatron.training.utils import (
 from megatron.training.datasets.sft_dataset import SFTDataset, MockSFTDataset
 from model_provider import model_provider
 from layerwise_ffn.arguments import add_layerwise_ffn_args
+from cross_layer_moe.arguments import add_cross_layer_expert_sharing_args
 
 try:
     from megatron.post_training.arguments import add_modelopt_args
@@ -67,6 +68,7 @@ except ImportError:
 def extra_args_provider(parser):
     """Register project-level extra CLI args (layer-wise FFN, and modelopt if available)."""
     parser = add_layerwise_ffn_args(parser)
+    parser = add_cross_layer_expert_sharing_args(parser)
     if has_nvidia_modelopt:
         parser = add_modelopt_args(parser)
     return parser

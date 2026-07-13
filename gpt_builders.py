@@ -25,6 +25,9 @@ from layerwise_ffn.config import LayerwiseFFNTransformerConfig
 from layerwise_ffn.layer_specs import build_layerwise_ffn_block_spec
 from layerwise_ffn.sharing import tie_ffn_across_layers
 
+from cross_layer_moe.config import CrossLayerExpertSharingConfig
+from cross_layer_moe.sharing import tie_cross_layer_experts
+
 import megatron.legacy.model  # isort: skip
 
 # NOTE: Loading `megatron.legacy.model` earlier fails due to circular import
@@ -39,6 +42,12 @@ def _use_layerwise_ffn(args):
     )
 
 
+def _use_cross_layer_expert_sharing(args):
+    # Enable the cross-layer expert sharing path when sharing groups are given. This ties one MoE
+    # expert pool (size len(group) * num_experts) across each group of decoder layers.
+    return bool(getattr(args, "cross_layer_expert_sharing_groups", None))
+
+
 def gpt_builder(args, pre_process, post_process, vp_stage=None, config=None, pg_collection=None):
     print_rank_0('building GPT model ...')
     if config is None:
@@ -49,6 +58,12 @@ def gpt_builder(args, pre_process, post_process, vp_stage=None, config=None, pg_
             # per-layer ffn_hidden_size through Megatron's heterogeneous per-layer config hook.
             config = core_transformer_config_from_args(
                 args, config_class=LayerwiseFFNTransformerConfig
+            )
+        elif _use_cross_layer_expert_sharing(args):
+            # Cross-layer expert sharing: use a config subclass that overrides per-layer
+            # num_moe_experts to the group's pool size via the heterogeneous per-layer config hook.
+            config = core_transformer_config_from_args(
+                args, config_class=CrossLayerExpertSharingConfig
             )
         else:
             config = core_transformer_config_from_args(args)
@@ -146,7 +161,11 @@ def gpt_builder(args, pre_process, post_process, vp_stage=None, config=None, pg_
         if _use_layerwise_ffn(args):
             # Tie slave-layer FFNs to their group master before the model is wrapped/optimized.
             tie_ffn_across_layers(model, config)
-    
+
+        if _use_cross_layer_expert_sharing(args):
+            # Tie slave-layer MoE pools to their group master before wrapping/optimizing.
+            tie_cross_layer_experts(model, config)
+
     return model
 
 
