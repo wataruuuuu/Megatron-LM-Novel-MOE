@@ -30,9 +30,12 @@ reduced total loss. The default (independent-router) mode needs no such hook: ea
 has its own router with its own ``layer_number``.
 """
 
+from collections import Counter
 from typing import Dict
 
 import torch
+
+from megatron.core.utils import unwrap_model
 
 
 def _layers_by_global_index(model) -> Dict[int, torch.nn.Module]:
@@ -126,3 +129,146 @@ def validate_cross_layer_experts(model, config) -> None:
             assert layers[slave_idx].mlp.router is not layers[master_idx].mlp.router, (
                 f"layer {slave_idx} router must stay independent from master layer {master_idx}"
             )
+
+
+def _grad_of(param) -> torch.Tensor:
+    """Return the live gradient of a parameter, preferring Megatron's ``main_grad`` buffer.
+
+    Megatron's DDP accumulates into a contiguous ``param.main_grad`` buffer rather than the
+    autograd-populated ``param.grad``; return whichever is present so the check works under both.
+    """
+    main_grad = getattr(param, "main_grad", None)
+    if main_grad is not None:
+        return main_grad
+    return param.grad
+
+
+def assert_cross_layer_tying(model, config, *, check_grad: bool = False) -> None:
+    """Verify at run time that every slave layer is still tied to its group master.
+
+    Extends the construction-time :func:`validate_cross_layer_experts` with checks that matter once
+    training is under way -- run it periodically (e.g. from the training loop) or after a checkpoint
+    reload, where tying can silently break:
+
+      - level 1 (identity + storage): the slave and master expert modules are the same object and
+        every expert parameter shares the same ``data_ptr`` (and router too, when shared);
+      - level 2 (sentinel): writing a value into the master pool is observed through the slave,
+        proving they are literally the same tensor (value restored under ``no_grad``);
+      - level 3 (optimizer de-dup): the shared pool's parameters appear exactly once in the de-dup
+        ``model.parameters()`` (so the optimizer counts them once) yet ``len(group)`` times in the
+        raw listing (so every grouped layer references them) -- this is the mechanism the optimizer
+        and DDP rely on to accumulate every layer's gradient into one entry;
+      - level 4 (gradient), when ``check_grad``: the shared pool's gradient buffer exists and is
+        finite. This confirms the tied pool owns a single, live gradient buffer; the *dynamic* proof
+        that gradient actually flows from every layer is added by ``cross_layer_moe.debug``.
+
+    Raises ``AssertionError`` on the first violated invariant. No-op without a sharing group.
+    """
+    if not getattr(config, "cross_layer_expert_sharing_groups", None):
+        return
+
+    m = unwrap_model(model)
+    shared_router = getattr(config, "cross_layer_expert_sharing_shared_router", False)
+    layers = _layers_by_global_index(m)
+
+    # Occurrence counts for level-3: parameters() de-dups (the optimizer's view); the raw listing
+    # keeps every reference, so a correctly tied pool appears once de-dup and len(group) times raw.
+    dedup_counts = Counter(id(p) for p in m.parameters())
+    raw_counts = Counter(id(p) for _, p in m.named_parameters(remove_duplicate=False))
+
+    # Level 1: object + storage identity for every slave/master pair.
+    for slave_idx, master_idx in config.cross_layer_idx_to_master.items():
+        if slave_idx == master_idx:
+            continue
+        if slave_idx not in layers or master_idx not in layers:
+            continue  # split across pipeline stages; tie_cross_layer_experts already rejects this.
+        s_mlp, m_mlp = layers[slave_idx].mlp, layers[master_idx].mlp
+        assert s_mlp is not m_mlp, (
+            f"layer {slave_idx} must keep its own MoELayer wrapper (only sub-modules are tied)"
+        )
+        assert s_mlp.experts is m_mlp.experts, (
+            f"layer {slave_idx} experts are no longer tied to master layer {master_idx}"
+        )
+        for ps, pm in zip(s_mlp.experts.parameters(), m_mlp.experts.parameters()):
+            assert ps is pm and ps.data_ptr() == pm.data_ptr(), (
+                f"layer {slave_idx} expert storage diverged from master layer {master_idx}"
+            )
+        if shared_router:
+            assert s_mlp.router is m_mlp.router, (
+                f"layer {slave_idx} router is no longer tied to master layer {master_idx}"
+            )
+        else:
+            assert s_mlp.router is not m_mlp.router, (
+                f"layer {slave_idx} router must stay independent from master layer {master_idx}"
+            )
+
+    # Levels 3 + 4: per group, check the shared pool's optimizer de-dup and (optionally) gradient.
+    for grp in config.cross_layer_expert_sharing_groups:
+        if not grp:
+            continue
+        master_idx = min(grp)
+        size = len(grp)
+        if master_idx not in layers:
+            continue
+        shared_modules = [layers[master_idx].mlp.experts]
+        if shared_router:
+            shared_modules.append(layers[master_idx].mlp.router)
+        for module in shared_modules:
+            for p in module.parameters():
+                assert dedup_counts[id(p)] == 1, (
+                    f"group master {master_idx}: a shared param is counted "
+                    f"{dedup_counts[id(p)]} times by the optimizer (expected 1)"
+                )
+                assert raw_counts[id(p)] == size, (
+                    f"group master {master_idx}: a shared param is referenced by "
+                    f"{raw_counts[id(p)]} layers (expected {size}); tying is incomplete"
+                )
+                if check_grad:
+                    grad = _grad_of(p)
+                    assert grad is not None, (
+                        f"group master {master_idx}: shared param has no gradient buffer; "
+                        f"the tied pool is not receiving gradient"
+                    )
+                    assert torch.isfinite(grad).all(), (
+                        f"group master {master_idx}: shared param gradient is non-finite"
+                    )
+
+    # Level 2: sentinel write/read on the first group, proving the slave sees the master's tensor.
+    _sentinel_check(config, layers)
+
+
+def _sentinel_check(config, layers) -> None:
+    """Write a value into a master expert tensor and read it back through a slave (then restore)."""
+    for slave_idx, master_idx in config.cross_layer_idx_to_master.items():
+        if slave_idx == master_idx:
+            continue
+        if slave_idx not in layers or master_idx not in layers:
+            continue
+        master_params = list(layers[master_idx].mlp.experts.parameters())
+        slave_params = list(layers[slave_idx].mlp.experts.parameters())
+        if not master_params:
+            return
+        mp, sp = master_params[0], slave_params[0]
+        with torch.no_grad():
+            flat_m = mp.data.reshape(-1)
+            flat_s = sp.data.reshape(-1)
+            original = flat_m[0].clone()
+            try:
+                flat_m[0] = original + 1234.5
+                # Read both sides back from storage so any dtype rounding (e.g. fp8) is identical;
+                # if the tensor is shared the slave observes exactly the master's stored value, and
+                # the value must have actually changed from the original.
+                observed_master = flat_m[0].item()
+                observed_slave = flat_s[0].item()
+                assert observed_slave == observed_master, (
+                    f"sentinel written to master layer {master_idx} not visible through slave "
+                    f"layer {slave_idx} (slave={observed_slave}, master={observed_master}); "
+                    f"pool not shared"
+                )
+                assert observed_master != original.item(), (
+                    f"sentinel write to master layer {master_idx} had no effect; cannot verify "
+                    f"sharing with slave layer {slave_idx}"
+                )
+            finally:
+                flat_m[0] = original
+        return  # one sentinel pair is enough

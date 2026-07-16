@@ -1,17 +1,23 @@
 # Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
+from cross_layer_moe.aux_loss import install_cross_layer_aux_loss
+from cross_layer_moe.config import CrossLayerExpertSharingConfig
+from cross_layer_moe.sharing import tie_cross_layer_experts
+from layerwise_ffn.config import LayerwiseFFNTransformerConfig
+from layerwise_ffn.layer_specs import build_layerwise_ffn_block_spec
+from layerwise_ffn.sharing import tie_ffn_across_layers
 from megatron.core.models.gpt import GPTModel
-from megatron.core.models.gpt.gpt_layer_specs import (
-    get_gpt_decoder_block_spec,
-    get_gpt_layer_local_spec,
-    get_gpt_layer_with_transformer_engine_spec,
-    get_gpt_layer_with_inference_spec,
-    get_gpt_mtp_block_spec,
-    get_gpt_decoder_layer_specs,
-)
 from megatron.core.models.gpt.experimental_attention_variant_module_specs import (
     get_transformer_block_with_experimental_attention_variant_spec,
     get_transformer_layer_with_experimental_attention_variant_spec,
+)
+from megatron.core.models.gpt.gpt_layer_specs import (
+    get_gpt_decoder_block_spec,
+    get_gpt_decoder_layer_specs,
+    get_gpt_layer_local_spec,
+    get_gpt_layer_with_inference_spec,
+    get_gpt_layer_with_transformer_engine_spec,
+    get_gpt_mtp_block_spec,
 )
 from megatron.core.models.gpt.heterogeneous.heterogeneous_layer_specs import (
     get_gpt_heterogeneous_layer_spec,
@@ -20,13 +26,6 @@ from megatron.core.transformer.spec_utils import import_module
 from megatron.training import get_args, print_rank_0
 from megatron.training.arguments import core_transformer_config_from_args
 from megatron.training.yaml_arguments import core_transformer_config_from_yaml
-
-from layerwise_ffn.config import LayerwiseFFNTransformerConfig
-from layerwise_ffn.layer_specs import build_layerwise_ffn_block_spec
-from layerwise_ffn.sharing import tie_ffn_across_layers
-
-from cross_layer_moe.config import CrossLayerExpertSharingConfig
-from cross_layer_moe.sharing import tie_cross_layer_experts
 
 import megatron.legacy.model  # isort: skip
 
@@ -165,6 +164,8 @@ def gpt_builder(args, pre_process, post_process, vp_stage=None, config=None, pg_
         if _use_cross_layer_expert_sharing(args):
             # Tie slave-layer MoE pools to their group master before wrapping/optimizing.
             tie_cross_layer_experts(model, config)
+            # Optionally pool the MoE aux loss across each sharing group (attach once at the tail).
+            install_cross_layer_aux_loss(model, config)
 
     return model
 

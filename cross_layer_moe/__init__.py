@@ -12,12 +12,21 @@ Designed for the Transformer Engine backend; touches only the project-level buil
 """
 
 from cross_layer_moe.arguments import add_cross_layer_expert_sharing_args
+from cross_layer_moe.aux_loss import install_cross_layer_aux_loss
 from cross_layer_moe.config import CrossLayerExpertSharingConfig
-from cross_layer_moe.sharing import tie_cross_layer_experts, validate_cross_layer_experts
+from cross_layer_moe.debug import check_cross_layer_tying
+from cross_layer_moe.sharing import (
+    assert_cross_layer_tying,
+    tie_cross_layer_experts,
+    validate_cross_layer_experts,
+)
 
 __all__ = [
     "add_cross_layer_expert_sharing_args",
+    "install_cross_layer_aux_loss",
     "CrossLayerExpertSharingConfig",
+    "check_cross_layer_tying",
+    "assert_cross_layer_tying",
     "tie_cross_layer_experts",
     "validate_cross_layer_experts",
 ]

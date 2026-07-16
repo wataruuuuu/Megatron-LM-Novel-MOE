@@ -44,4 +44,14 @@ def add_cross_layer_expert_sharing_args(parser):
         "shared pool with the same gate. When unset (default), only the experts are shared and "
         "each layer keeps an independent router over the shared pool.",
     )
+    group.add_argument(
+        "--cross-layer-expert-sharing-cross-layer-aux-loss",
+        action="store_true",
+        default=False,
+        help="Pool the MoE load-balancing (aux) loss across a sharing group: the routed-load of "
+        "all L layers is aggregated and a single aux loss is attached once at the group's tail "
+        "layer (exact, per-microbatch), so each layer's router is trained against the whole "
+        "group's congestion. When unset (default), each layer keeps its own per-layer aux loss. "
+        "Orthogonal to --cross-layer-expert-sharing-shared-router.",
+    )
     return parser

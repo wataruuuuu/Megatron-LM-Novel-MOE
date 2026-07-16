@@ -294,6 +294,15 @@ class TopKRouter(Router):
         if aux_loss_coeff == 0:
             return probs
 
+        # Generic, opt-in delegation hook. If an external collaborator is attached (e.g. the
+        # cross-layer expert-sharing package pools this aux loss across a group of layers), let it
+        # own the aux-loss computation/attachment for this router. No-op for everyone else.
+        cross_layer_aux_agg = getattr(self, "_cross_layer_aux_agg", None)
+        if cross_layer_aux_agg is not None:
+            return cross_layer_aux_agg(
+                self, probs, scores_for_aux_loss, routing_map, with_padding_mask, aux_loss_coeff
+            )
+
         global_tokens_per_expert, local_num_tokens, total_num_tokens = (
             get_tokens_per_expert_and_token_count(
                 routing_map=routing_map,

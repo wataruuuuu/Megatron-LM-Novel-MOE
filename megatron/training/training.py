@@ -2410,6 +2410,10 @@ def training_log(
         track_names = []
         if "aux_loss" in args.moe_router_load_balancing_type:
             track_names.append("load_balancing_loss")
+            # Cross-layer expert sharing with pooled aux loss logs the group's balance under a
+            # distinct name; "load_balancing_loss" then carries each layer's own (diagnostic) loss.
+            if getattr(args, "cross_layer_expert_sharing_cross_layer_aux_loss", False):
+                track_names.append("cross_layer_load_balancing_loss")
         if "seq_aux_loss" in args.moe_router_load_balancing_type:
             track_names.append("seq_load_balancing_loss")
         if "global_aux_loss" in args.moe_router_load_balancing_type:

@@ -36,6 +36,13 @@ class CrossLayerExpertSharingConfig(TransformerConfig):
     # group as well, so every layer routes over the shared pool with the same gate.
     cross_layer_expert_sharing_shared_router: bool = False
 
+    # Cross-layer (pooled) aux-loss knob. When False (default), each grouped layer computes its
+    # normal per-layer load-balancing loss over the shared pool. When True, the group's routed-load
+    # is pooled across all L layers and a single aux loss is attached once at the group's tail
+    # layer (exact, per-microbatch), so each layer's router is pushed by the whole group's
+    # congestion. Orthogonal to ``cross_layer_expert_sharing_shared_router``.
+    cross_layer_expert_sharing_cross_layer_aux_loss: bool = False
+
     def __post_init__(self):
         super().__post_init__()
 
