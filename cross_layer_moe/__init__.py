@@ -12,7 +12,11 @@ Designed for the Transformer Engine backend; touches only the project-level buil
 """
 
 from cross_layer_moe.arguments import add_cross_layer_expert_sharing_args
-from cross_layer_moe.aux_loss import install_cross_layer_aux_loss
+from cross_layer_moe.aux_loss import (
+    get_cross_layer_aux_tracker,
+    install_cross_layer_aux_loss,
+    report_cross_layer_aux_loss,
+)
 from cross_layer_moe.config import CrossLayerExpertSharingConfig
 from cross_layer_moe.debug import check_cross_layer_tying
 from cross_layer_moe.sharing import (
@@ -23,7 +27,9 @@ from cross_layer_moe.sharing import (
 
 __all__ = [
     "add_cross_layer_expert_sharing_args",
+    "get_cross_layer_aux_tracker",
     "install_cross_layer_aux_loss",
+    "report_cross_layer_aux_loss",
     "CrossLayerExpertSharingConfig",
     "check_cross_layer_tying",
     "assert_cross_layer_tying",

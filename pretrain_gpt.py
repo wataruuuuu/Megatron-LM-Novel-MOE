@@ -434,6 +434,10 @@ if __name__ == "__main__":
     # Temporary for transition to core datasets
     train_valid_test_datasets_provider.is_distributed = True
 
+    # Silence the per-file GPTDataset index-load INFO logs (a large blend cause flooding the log).
+    import logging
+    logging.getLogger("megatron.core.datasets").setLevel(logging.WARNING)
+
     # Optionally enable inprocess restart on pretrain
     pretrain, store = inprocess_restart.maybe_wrap_for_inprocess_restart(pretrain)
 

@@ -2410,10 +2410,6 @@ def training_log(
         track_names = []
         if "aux_loss" in args.moe_router_load_balancing_type:
             track_names.append("load_balancing_loss")
-            # Cross-layer expert sharing with pooled aux loss logs the group's balance under a
-            # distinct name; "load_balancing_loss" then carries each layer's own (diagnostic) loss.
-            if getattr(args, "cross_layer_expert_sharing_cross_layer_aux_loss", False):
-                track_names.append("cross_layer_load_balancing_loss")
         if "seq_aux_loss" in args.moe_router_load_balancing_type:
             track_names.append("seq_load_balancing_loss")
         if "global_aux_loss" in args.moe_router_load_balancing_type:
@@ -2447,6 +2443,23 @@ def training_log(
             pg_collection=pg_collection,
             total_loss_dict=total_loss_dict,
         )
+        # Cross-layer expert sharing: pooled aux loss is logged once per sharing group by its own
+        # tracker (group-correct divisor and group-indexed keys), independent of the global report.
+        if getattr(args, "cross_layer_expert_sharing_cross_layer_aux_loss", False):
+            groups = [grp for grp in (args.cross_layer_expert_sharing_groups or []) if grp]
+            if groups:
+                from cross_layer_moe import report_cross_layer_aux_loss
+
+                moe_log_string += report_cross_layer_aux_loss(
+                    num_groups=len(groups),
+                    loss_scale=moe_loss_scale,
+                    iteration=iteration,
+                    writer=writer,
+                    wandb_writer=wandb_writer,
+                    per_layer_logging=args.moe_per_layer_logging,
+                    pg_collection=pg_collection,
+                    total_loss_dict=total_loss_dict,
+                )
         if getattr(args, 'log_moe_overload_factor', False):
             overload_log_string = get_moe_overload_factor_tracker().report(
                 iteration=iteration,
