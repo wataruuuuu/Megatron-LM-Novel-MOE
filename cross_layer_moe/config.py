@@ -27,8 +27,9 @@ class CrossLayerExpertSharingConfig(TransformerConfig):
     """TransformerConfig with cross-layer MoE expert-pool sharing groups."""
 
     # Groups of layer indices (0-based) that share one MoE expert pool. The smallest index in a
-    # group is the master; the others reuse its experts (and, in the base, its router). Each
-    # group's pool size is ``len(group) * num_moe_experts``.
+    # group is the master; the others reuse its experts (and its router only when
+    # ``cross_layer_expert_sharing_shared_router`` is set). Each group's pool size is
+    # ``len(group) * num_moe_experts``.
     cross_layer_expert_sharing_groups: Optional[List[List[int]]] = None
 
     # Router-sharing knob. When False (default), only the experts are shared across a group and

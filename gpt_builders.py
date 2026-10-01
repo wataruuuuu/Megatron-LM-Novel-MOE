@@ -2,6 +2,7 @@
 
 from cross_layer_moe.aux_loss import install_cross_layer_aux_loss
 from cross_layer_moe.config import CrossLayerExpertSharingConfig
+from cross_layer_moe.meta_build import meta_init_slave_experts
 from cross_layer_moe.sharing import tie_cross_layer_experts
 from layerwise_ffn.config import LayerwiseFFNTransformerConfig
 from layerwise_ffn.layer_specs import build_layerwise_ffn_block_spec
@@ -95,6 +96,10 @@ def gpt_builder(args, pre_process, post_process, vp_stage=None, config=None, pg_
                     qk_l2_norm=args.qk_l2_norm,
                     vp_stage=vp_stage,
                 )
+                if _use_cross_layer_expert_sharing(args):
+                    # Slave-layer expert pools are discarded by the tying below; keep them off the
+                    # GPU so construction does not peak at len(group) copies of the pool.
+                    meta_init_slave_experts(transformer_layer_spec, config, vp_stage=vp_stage)
             elif args.heterogeneous_layers_config_path is not None:
                 assert not (config.transformer_impl == "inference_optimized")
                 transformer_layer_spec = get_gpt_heterogeneous_layer_spec(config, use_te)

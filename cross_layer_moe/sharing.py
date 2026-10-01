@@ -30,6 +30,7 @@ reduced total loss. The default (independent-router) mode needs no such hook: ea
 has its own router with its own ``layer_number``.
 """
 
+import re
 from collections import Counter
 from typing import Dict
 
@@ -71,6 +72,49 @@ def tie_cross_layer_experts(model, config) -> None:
     if shared_router:
         # The shared router carries the master's frozen layer_number; fix per-layer logging.
         _install_layer_number_logging_hooks(model, config)
+
+    _checkpoint_master_experts_only(model, config)
+
+
+def _checkpoint_master_experts_only(model, config) -> None:
+    """Save and load a shared expert pool once, under its master layer.
+
+    ``TransformerBlock.sharded_state_dict`` walks layers by name, so without this a tied pool is
+    written once per grouped layer as byte-identical copies. Besides inflating the checkpoint, a
+    resume then swiglu-merges ``len(group)`` pools on the GPU, which OOMs into Megatron's per-expert
+    CPU-merge fallback (``gc.collect()`` each time; ~1.5 h for d1024 with a 24-layer group).
+
+    Each slave layer's ``sharded_state_dict`` drops its ``mlp.experts.`` keys, so checkpoint save
+    and load only touch the master's copy. Checkpoints written before this change still load
+    unchanged: their slave copies are simply not requested (the default ``assume_ok_unexpected``
+    strictness ignores keys present only in the checkpoint) and equal the master's. Routers are left
+    as they are: shared-router copies are small and ``src/router_subspace`` reads them per layer.
+
+    Megatron ends a load with ``module.load_state_dict(strict=True)``, which would report the slave
+    experts as missing; a post-hook removes exactly those keys from ``missing_keys``.
+    """
+    layers = _layers_by_global_index(model)
+    slaves = {idx for idx, master in config.cross_layer_idx_to_master.items() if idx != master}
+
+    for idx in slaves:
+
+        def sharded_state_dict(
+            prefix="", sharded_offsets=(), metadata=None, _orig=layers[idx].sharded_state_dict
+        ):
+            sd = _orig(prefix, sharded_offsets, metadata)
+            return {k: v for k, v in sd.items() if not k.startswith(f"{prefix}mlp.experts.")}
+
+        layers[idx].sharded_state_dict = sharded_state_dict
+
+    # load_state_dict keys use the ModuleList position, which differs from the global index under PP.
+    positions = [i for i, layer in enumerate(model.decoder.layers) if layer.layer_number - 1 in slaves]
+    slave_experts = re.compile(rf"(^|\.)layers\.({'|'.join(map(str, positions))})\.mlp\.experts\.")
+
+    def _ignore_missing_slave_experts(module, incompatible_keys):
+        missing = incompatible_keys.missing_keys
+        missing[:] = [k for k in missing if not slave_experts.search(k)]
+
+    model.register_load_state_dict_post_hook(_ignore_missing_slave_experts)
 
 
 def _install_layer_number_logging_hooks(model, config) -> None:
